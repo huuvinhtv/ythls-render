@@ -61,13 +61,11 @@ const handleStream = (req, res, streamId, ytUrl, isLive) => {
     console.log(`[START] Đang khởi tạo luồng cho: ${streamId}`);
 
     // CẤU HÌNH YT-DLP:
-    // -f "bestvideo[height<=1080]+bestaudio/best": Ưu tiên 1080p, nếu không có lấy best
-    // --merge-output-format mpegts: BẮT BUỘC để stream qua pipe:0 không bị lỗi
     const format = isLive ? "best" : "bestvideo[height<=1080]+bestaudio/best";
     
     const ytdlpArgs = [
       "-f", format,
-      "--merge-output-format", "mpegts", 
+      "--merge-output-format", "mkv", // ĐÃ FIX: Đổi từ mpegts sang mkv
       "-o", "-",
       ytUrl
     ];
@@ -98,7 +96,7 @@ const handleStream = (req, res, streamId, ytUrl, isLive) => {
       lastAccessed: Date.now() 
     };
 
-    // Log lỗi để dễ debug (có thể comment lại nếu log quá nhiều)
+    // Log lỗi để dễ debug (Render sẽ hiện cái này nếu có lỗi mới)
     ytdlp.stderr.on('data', (data) => console.log(`[YT-DLP ${streamId}]:`, data.toString().trim()));
     
     ffmpeg.on('close', () => {
@@ -142,8 +140,6 @@ app.get("/video/:id.m3u8", (req, res) => {
 // =========================
 app.get("/channel/:id.m3u8", (req, res) => {
   const channelId = req.params.id;
-  // Đối với live stream, format mpegts đôi khi không cần thiết hoặc gây trễ,
-  // nhưng hàm handleStream đã set isLive = true để dùng format an toàn.
   handleStream(req, res, channelId, `https://www.youtube.com/channel/${channelId}/live`, true);
 });
 
