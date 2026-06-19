@@ -8,18 +8,19 @@ app.get("/", (req, res) => {
   res.send("YT-Direct Redirect Server is running...");
 });
 
-// Hàm lấy link m3u8 gốc từ YouTube
 const getDirectUrl = (url) => {
   return new Promise((resolve, reject) => {
-    // Dùng --get-url để lấy link stream trực tiếp từ YouTube
-    const cmd = `yt-dlp -g --format "best[ext=mp4][height<=1080]/best[ext=mp4]" ${url}`;
+    // Thêm --user-agent giả lập trình duyệt và --format để ép lấy 1080p
+    const cmd = `yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" -g --format "bestvideo[height<=1080]+bestaudio/best" ${url}`;
     
     exec(cmd, (error, stdout, stderr) => {
       if (error) {
         reject(stderr);
         return;
       }
-      resolve(stdout.trim());
+      // Khi tải format phức tạp (video+audio), yt-dlp trả về 2 dòng link
+      // Chúng ta cần lấy link đầu tiên hoặc sử dụng --get-url
+      resolve(stdout.trim().split('\n')[0]);
     });
   });
 };
