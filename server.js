@@ -5,20 +5,36 @@ import cors from "cors";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Cho phép tất cả các nguồn truy cập để tránh lỗi CORS khi gắn vào Web/App
+// Bật CORS để tránh lỗi khi nhúng luồng vào Web Admin hoặc Player
 app.use(cors());
 
+// ==========================================
+// HỆ THỐNG CACHE TRÁNH BỊ YOUTUBE BAN IP
+// Link Direct của YouTube thường sống được khoảng 4-6 tiếng.
+// Ta sẽ lưu link này lại trong RAM 2 tiếng để dùng chung cho mọi người xem.
+// ==========================================
+const streamCache = {};
+const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // Cache trong 2 giờ
+
 app.get("/", (req, res) => {
-  res.send("YT-Direct Redirect Server (Pre-muxed Video+Audio) is running...");
+  res.send("YT-Direct Playlist Router is running...");
 });
 
 /**
  * Hàm lấy URL luồng trực tiếp từ YouTube
- * Dùng format "best[ext=mp4]/best" để bắt buộc lấy file gộp sẵn cả hình và tiếng.
- * Giới hạn cao nhất của định dạng gộp sẵn này trên YouTube là 720p.
  */
-const getDirectUrl = (url) => {
+const getDirectUrl = (url, cacheKey) => {
   return new Promise((resolve, reject) => {
+    
+    // 1. Kiểm tra xem link đã có sẵn trong Cache chưa
+    if (streamCache[cacheKey] && Date.now() < streamCache[cacheKey].expires) {
+      console.log(`[CACHE HIT] Trả về link trực tiếp có sẵn cho: ${cacheKey}`);
+      return resolve(streamCache[cacheKey].url);
+    }
+
+    console.log(`[FETCH] Đang lấy link YouTube gốc cho: ${cacheKey}`);
+    
+    // 2. Nếu chưa có, dùng yt-dlp ép lấy định dạng gộp sẵn MP4 (720p)
     const cmd = `yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" -g --format "best[ext=mp4]/best" ${url}`;
     
     exec(cmd, (error, stdout, stderr) => {
@@ -27,51 +43,53 @@ const getDirectUrl = (url) => {
         return;
       }
       
-      // Lúc này yt-dlp sẽ trả về 1 link duy nhất chứa cả hình và tiếng
       const directLink = stdout.trim().split('\n')[0];
+      
+      // 3. Lưu link vào Cache để tái sử dụng
+      streamCache[cacheKey] = {
+        url: directLink,
+        expires: Date.now() + CACHE_TTL_MS
+      };
+      
       resolve(directLink);
     });
   });
 };
 
 // =========================
-// Router cho VOD (Video thường)
+// ROUTER: VIDEO VOD
 // =========================
 app.get("/video/:id", async (req, res) => {
   try {
     const videoId = req.params.id;
-    // Bỏ đuôi .m3u8 nếu có người dùng gọi nhầm link cũ
     const cleanId = videoId.replace('.m3u8', ''); 
     const url = `https://www.youtube.com/watch?v=${cleanId}`;
     
-    const directUrl = await getDirectUrl(url);
-    console.log(`[REDIRECT] Video ${cleanId} -> Lấy link thành công`);
+    const directUrl = await getDirectUrl(url, `video_${cleanId}`);
     res.redirect(directUrl);
   } catch (err) {
-    console.error(`[ERROR] Video: ${err}`);
-    res.status(500).send("Không thể lấy link trực tiếp. Lỗi: " + err);
+    console.error(`[ERROR] VOD: ${err}`);
+    res.status(500).send("Lỗi định tuyến VOD: " + err);
   }
 });
 
 // =========================
-// Router cho Live Stream
+// ROUTER: CHANNEL LIVE
 // =========================
 app.get("/channel/:id", async (req, res) => {
   try {
     const channelId = req.params.id;
-    // Bỏ đuôi .m3u8 nếu có
     const cleanId = channelId.replace('.m3u8', '');
     const url = `https://www.youtube.com/channel/${cleanId}/live`;
     
-    const directUrl = await getDirectUrl(url);
-    console.log(`[REDIRECT] Channel Live ${cleanId} -> Lấy link thành công`);
+    const directUrl = await getDirectUrl(url, `live_${cleanId}`);
     res.redirect(directUrl);
   } catch (err) {
-    console.error(`[ERROR] Channel: ${err}`);
-    res.status(500).send("Không thể lấy link Live trực tiếp. Lỗi: " + err);
+    console.error(`[ERROR] LIVE: ${err}`);
+    res.status(500).send("Lỗi định tuyến Live: " + err);
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server Redirect chạy thành công tại Port: ${PORT}`);
+  console.log(`Hệ thống định tuyến đang chạy tại Port: ${PORT}`);
 });
