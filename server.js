@@ -5,62 +5,73 @@ import cors from "cors";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Cho phép tất cả các nguồn truy cập để tránh lỗi CORS khi nhúng vào web/player
+// Cho phép tất cả các nguồn truy cập để tránh lỗi CORS khi gắn vào Web/App
 app.use(cors());
 
 app.get("/", (req, res) => {
-  res.send("YT-Direct Redirect Server (H.264 1080p Mode) is running...");
+  res.send("YT-Direct Redirect Server (Pre-muxed Video+Audio) is running...");
 });
 
 /**
  * Hàm lấy URL luồng trực tiếp từ YouTube
- * Ép buộc định dạng AVC (H.264) và AAC (m4a) để đảm bảo tương thích 100%
+ * Dùng format "best[ext=mp4]/best" để bắt buộc lấy file gộp sẵn cả hình và tiếng.
+ * Giới hạn cao nhất của định dạng gộp sẵn này trên YouTube là 720p.
  */
 const getDirectUrl = (url) => {
   return new Promise((resolve, reject) => {
-    // --user-agent: Giả lập trình duyệt Chrome để không bị YouTube chặn (403)
-    // bestvideo[vcodec^=avc1][height<=1080]: Chỉ lấy H.264 tối đa 1080p
-    // bestaudio[ext=m4a]: Chỉ lấy âm thanh AAC
-    const cmd = `yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" -g --format "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/best[vcodec^=avc1][ext=mp4]" ${url}`;
+    const cmd = `yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" -g --format "best[ext=mp4]/best" ${url}`;
     
     exec(cmd, (error, stdout, stderr) => {
       if (error) {
         reject(stderr);
         return;
       }
-      // yt-dlp trả về 1 hoặc 2 dòng (nếu có audio), lấy dòng đầu tiên
-      const urls = stdout.trim().split('\n');
-      resolve(urls[0]);
+      
+      // Lúc này yt-dlp sẽ trả về 1 link duy nhất chứa cả hình và tiếng
+      const directLink = stdout.trim().split('\n')[0];
+      resolve(directLink);
     });
   });
 };
 
-// Route lấy link cho VOD (Video thông thường)
+// =========================
+// Router cho VOD (Video thường)
+// =========================
 app.get("/video/:id", async (req, res) => {
   try {
-    const url = `https://www.youtube.com/watch?v=${req.params.id}`;
+    const videoId = req.params.id;
+    // Bỏ đuôi .m3u8 nếu có người dùng gọi nhầm link cũ
+    const cleanId = videoId.replace('.m3u8', ''); 
+    const url = `https://www.youtube.com/watch?v=${cleanId}`;
+    
     const directUrl = await getDirectUrl(url);
-    console.log(`[REDIRECT] Video ${req.params.id} -> ${directUrl}`);
+    console.log(`[REDIRECT] Video ${cleanId} -> Lấy link thành công`);
     res.redirect(directUrl);
   } catch (err) {
-    console.error(`[ERROR] ${err}`);
-    res.status(500).send("Lỗi lấy luồng: " + err);
+    console.error(`[ERROR] Video: ${err}`);
+    res.status(500).send("Không thể lấy link trực tiếp. Lỗi: " + err);
   }
 });
 
-// Route lấy link cho Live Stream
+// =========================
+// Router cho Live Stream
+// =========================
 app.get("/channel/:id", async (req, res) => {
   try {
-    const url = `https://www.youtube.com/channel/${req.params.id}/live`;
+    const channelId = req.params.id;
+    // Bỏ đuôi .m3u8 nếu có
+    const cleanId = channelId.replace('.m3u8', '');
+    const url = `https://www.youtube.com/channel/${cleanId}/live`;
+    
     const directUrl = await getDirectUrl(url);
-    console.log(`[REDIRECT] Channel ${req.params.id} -> ${directUrl}`);
+    console.log(`[REDIRECT] Channel Live ${cleanId} -> Lấy link thành công`);
     res.redirect(directUrl);
   } catch (err) {
-    console.error(`[ERROR] ${err}`);
-    res.status(500).send("Lỗi lấy luồng Live: " + err);
+    console.error(`[ERROR] Channel: ${err}`);
+    res.status(500).send("Không thể lấy link Live trực tiếp. Lỗi: " + err);
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server Redirect chạy tại Port: ${PORT}`);
+  console.log(`Server Redirect chạy thành công tại Port: ${PORT}`);
 });
