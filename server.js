@@ -7,7 +7,6 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const STREAM_DIR = "./streams";
 
-// Tạo thư mục gốc chứa stream nếu chưa có
 if (!fs.existsSync(STREAM_DIR)) {
   fs.mkdirSync(STREAM_DIR, { recursive: true });
 }
@@ -15,39 +14,29 @@ if (!fs.existsSync(STREAM_DIR)) {
 app.use("/streams", express.static(STREAM_DIR));
 
 app.get("/", (req, res) => {
-  res.send("YT-HLS Proxy (1080p Supported) is running...");
+  res.send("YT-HLS Proxy (Strict H.264/AAC for Web) is running...");
 });
 
-// Lưu trữ các tiến trình đang chạy và thời gian truy cập cuối
 const activeStreams = {};
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 phút không ai xem sẽ tự tắt
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
-// =========================
-// HỆ THỐNG DỌN RÁC (Garbage Collector)
-// =========================
 setInterval(() => {
   const now = Date.now();
   for (const [id, stream] of Object.entries(activeStreams)) {
     if (now - stream.lastAccessed > IDLE_TIMEOUT_MS) {
       console.log(`[CLEANUP] Tự động tắt stream [${id}] do không có người xem.`);
-      
-      // Kill tiến trình
       stream.ffmpeg.kill('SIGKILL');
       stream.ytdlp.kill('SIGKILL');
       delete activeStreams[id];
 
-      // Xóa thư mục chứa file .ts và .m3u8 để giải phóng ổ cứng
       const streamPath = path.join(STREAM_DIR, id);
       if (fs.existsSync(streamPath)) {
         fs.rmSync(streamPath, { recursive: true, force: true });
       }
     }
   }
-}, 60000); // Quét mỗi 60 giây
+}, 60000);
 
-// =========================
-// HÀM XỬ LÝ CHUNG CHO VOD VÀ LIVE
-// =========================
 const handleStream = (req, res, streamId, ytUrl, isLive) => {
   const streamPath = path.join(STREAM_DIR, streamId);
   const m3u8File = path.join(streamPath, "index.m3u8");
@@ -56,24 +45,27 @@ const handleStream = (req, res, streamId, ytUrl, isLive) => {
     fs.mkdirSync(streamPath, { recursive: true });
   }
 
-  // Nếu tiến trình chưa chạy, bắt đầu tạo mới
   if (!activeStreams[streamId]) {
     console.log(`[START] Đang khởi tạo luồng cho: ${streamId}`);
 
-    // CẤU HÌNH YT-DLP:
-    const format = isLive ? "best" : "bestvideo[height<=1080]+bestaudio/best";
+    // ==========================================
+    // BỘ LỌC CỰC KỲ NGHIÊM NGẶT (STRICT CODEC FILTER)
+    // vcodec^=avc: Bắt buộc lõi video phải là họ H.264 (avc1)
+    // acodec^=mp4a: Bắt buộc lõi audio phải là họ AAC (mp4a)
+    // ==========================================
+    const format = isLive 
+      ? "best[vcodec^=avc]" 
+      : "bestvideo[vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/best[vcodec^=avc]";
     
     const ytdlpArgs = [
       "-f", format,
-      "--merge-output-format", "mkv", // ĐÃ FIX: Đổi từ mpegts sang mkv
+      "--merge-output-format", "mkv",
       "-o", "-",
       ytUrl
     ];
 
     const ytdlp = spawn("yt-dlp", ytdlpArgs);
 
-    // CẤU HÌNH FFMPEG:
-    // -hls_list_size 10 & delete_segments: Chỉ giữ 10 file (chống tràn ổ cứng)
     const ffmpegArgs = [
       "-i", "pipe:0",
       "-c:v", "copy", "-c:a", "copy",
@@ -86,18 +78,18 @@ const handleStream = (req, res, streamId, ytUrl, isLive) => {
 
     const ffmpeg = spawn("ffmpeg", ffmpegArgs);
 
-    // Nối dữ liệu từ yt-dlp sang ffmpeg
     ytdlp.stdout.pipe(ffmpeg.stdin);
 
-    // Lưu vào bộ nhớ để quản lý
     activeStreams[streamId] = { 
       ytdlp, 
       ffmpeg, 
       lastAccessed: Date.now() 
     };
 
-    // Log lỗi để dễ debug (Render sẽ hiện cái này nếu có lỗi mới)
-    ytdlp.stderr.on('data', (data) => console.log(`[YT-DLP ${streamId}]:`, data.toString().trim()));
+    ytdlp.stderr.on('data', (data) => {
+      // In ra để bạn kiểm tra xem nó tải Codec gì (Nên thấy tải itag 137 hoặc 136 và 140)
+      console.log(`[YT-DLP]`, data.toString().trim());
+    });
     
     ffmpeg.on('close', () => {
       console.log(`[STOP] Tiến trình FFmpeg [${streamId}] đã đóng.`);
@@ -105,20 +97,16 @@ const handleStream = (req, res, streamId, ytUrl, isLive) => {
     });
 
   } else {
-    // Nếu stream đang chạy, cập nhật lại thời gian truy cập (reset thời gian đếm ngược 5 phút)
     activeStreams[streamId].lastAccessed = Date.now();
   }
 
-  // =========================
-  // CHỜ FILE M3U8 RỒI MỚI REDIRECT
-  // =========================
   let attempts = 0;
   const checkInterval = setInterval(() => {
     attempts++;
     if (fs.existsSync(m3u8File)) {
       clearInterval(checkInterval);
       res.redirect(`/streams/${streamId}/index.m3u8`);
-    } else if (attempts >= 25) { // Timeout sau 25 giây
+    } else if (attempts >= 25) { 
       clearInterval(checkInterval);
       if (!res.headersSent) {
         res.status(500).send("Lỗi Timeout: Tải và xử lý stream quá lâu.");
@@ -127,17 +115,11 @@ const handleStream = (req, res, streamId, ytUrl, isLive) => {
   }, 1000);
 };
 
-// =========================
-// ROUTER VOD (Video thường)
-// =========================
 app.get("/video/:id.m3u8", (req, res) => {
   const videoId = req.params.id;
   handleStream(req, res, videoId, `https://www.youtube.com/watch?v=${videoId}`, false);
 });
 
-// =========================
-// ROUTER LIVE (Kênh trực tiếp)
-// =========================
 app.get("/channel/:id.m3u8", (req, res) => {
   const channelId = req.params.id;
   handleStream(req, res, channelId, `https://www.youtube.com/channel/${channelId}/live`, true);
